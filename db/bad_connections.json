@@ -1,0 +1,9 @@
+{
+  "items": [
+    {
+      "config_name": "test-bad-server.ovpn",
+      "reason": "auth_failure",
+      "timestamp": 1764713907
+    }
+  ]
+}
