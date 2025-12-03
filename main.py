@@ -231,7 +231,7 @@ def restart_and_check(name: str):
     Returns status ok with ip_seen on success, or error details.
     """
     try:
-        mgr = VPNManager()
+        mgr = d()
         res = mgr.restart_and_check(name)
         if res.get("status") == "ok":
             return res
@@ -254,7 +254,7 @@ def maintenance_sweep():
 @app.delete("/proxy/{name}")
 def delete_proxy(name: str):
     try:
-        mgr = VPNManager()
+        mgr = d()
         res = mgr.delete_proxy(name)
         if res.get("status") == "ok":
             return res

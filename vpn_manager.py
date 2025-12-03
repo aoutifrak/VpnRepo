@@ -53,7 +53,7 @@ class VPNManager:
         # Load runtime config
         self.config_path = Path("./config.json")
         self.runtime = self._load_runtime_config()
-        self.vpn_provider = (self.runtime.get("vpn_service_provider") or "custom").lower()
+        self.vpn_provider = (self.runtime.get("vpn_service_provider") or "nordvpn").lower()
         self.vpn_user = self.runtime.get("openvpn_user")
         self.vpn_pass = self.runtime.get("openvpn_password")
 
@@ -64,9 +64,9 @@ class VPNManager:
         self._ensure_bad_db()
         self.bad_list = set(self._load_bad_list())
 
-        # Prepare ovpn list only if using custom provider
+        # Prepare ovpn list only if using nordvpn provider
         self.ovpn_files = []
-        if self.vpn_provider == "custom":
+        if self.vpn_provider == "nordvpn":
             if not self.configs_dir.exists():
                 raise FileNotFoundError(f"VPN configs directory not found: {self.configs_dir}")
             all_files = [p for p in self.configs_dir.glob("*.ovpn")] + [p for p in self.configs_dir.glob("*.conf")]
@@ -251,9 +251,9 @@ class VPNManager:
             "HTTPPROXY": "on",
         }
         # Provider selection
-        if self.vpn_provider == "custom" and ovpn_file is not None:
-            env["VPN_SERVICE_PROVIDER"] = "custom"
-            env["OPENVPN_CUSTOM_CONFIG"] = f"/gluetun/custom/{ovpn_file.name}"
+        if self.vpn_provider == "nordvpn" and ovpn_file is not None:
+            env["VPN_SERVICE_PROVIDER"] = "nordvpn"
+            env["OPENVPN_CUSTOM_CONFIG"] = f"/gluetun/ovpnvpn/{ovpn_file.name}"
         else:
             # Use given provider (e.g., nordvpn) per config.json
             env["VPN_SERVICE_PROVIDER"] = self.vpn_provider
@@ -263,11 +263,11 @@ class VPNManager:
         if self.vpn_pass:
             env["OPENVPN_PASSWORD"] = self.vpn_pass
 
-        # Mount custom configs only when using custom
+        # Mount custom configs only when using nordvpn
         volumes = {}
-        if self.vpn_provider == "custom" and ovpn_file is not None:
+        if self.vpn_provider == "nordvpn" and ovpn_file is not None:
             volumes[str(self.configs_dir.resolve())] = {
-                "bind": "/gluetun/custom",
+                "bind": "/gluetun/nordvpn",
                 "mode": "ro",
             }
 
