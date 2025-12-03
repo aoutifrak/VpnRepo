@@ -323,6 +323,7 @@ class VPNManager:
                 check=True,
             )
             logger.info(f"Container restart output: {result.stdout.strip()}")
+            time.sleep(7)  # brief wait after restart
             # Refresh docker SDK object to pick up new state
             try:
                 container.reload()
