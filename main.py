@@ -2,6 +2,12 @@ import logging
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from threading import Thread
+import uuid
+import time
+
+# Simple in-memory job store
+JOBS = {}
 from pydantic import BaseModel
 
 from vpn_manager import VPNManager
@@ -13,15 +19,17 @@ logger = logging.getLogger("vpnMan")
 app = FastAPI(title="vpn_manager", version="1.0.0")
 
 class NewProxyRequest(BaseModel):
-    port_min: Optional[int] = 20000
-    port_max: Optional[int] = 40000
-    health_timeout: Optional[int] = 45
-    request_timeout: Optional[int] = 15
-    max_attempts: Optional[int] = 5
+    port_min: int = 8887
+    port_max: int = 20000
+    health_timeout: int = 45
+    request_timeout: int = 15
+    max_attempts: int = 5
 
 @app.post("/new_proxy")
-def new_proxy(req: NewProxyRequest):
+def new_proxy(req: Optional[NewProxyRequest] = None):
     try:
+        if req is None:
+            req = NewProxyRequest()
         mgr = VPNManager(
             port_min=req.port_min,
             port_max=req.port_max,
@@ -39,17 +47,57 @@ def new_proxy(req: NewProxyRequest):
         logger.exception("Failed to create new proxy")
         raise HTTPException(status_code=500, detail={"status": "error", "message": str(e)})
 
+@app.post("/new_proxy_async")
+def new_proxy_async(req: Optional[NewProxyRequest] = None):
+    try:
+        if req is None:
+            req = NewProxyRequest()
+        job_id = str(uuid.uuid4())
+        JOBS[job_id] = {"status": "queued", "result": None, "created_at": int(time.time())}
+
+        def worker():
+            try:
+                mgr = VPNManager(
+                    port_min=req.port_min,
+                    port_max=req.port_max,
+                    health_timeout=req.health_timeout,
+                    request_timeout=req.request_timeout,
+                    max_attempts=req.max_attempts,
+                )
+                JOBS[job_id]["status"] = "running"
+                res = mgr.create_vpn_proxy()
+                JOBS[job_id]["result"] = res
+                JOBS[job_id]["status"] = "done" if res.get("status") == "ok" else "error"
+            except Exception as e:
+                JOBS[job_id]["result"] = {"status": "error", "message": str(e)}
+                JOBS[job_id]["status"] = "error"
+
+        Thread(target=worker, daemon=True).start()
+        return {"status": "accepted", "job_id": job_id}
+    except Exception as e:
+        logger.exception("Failed to enqueue new proxy job")
+        raise HTTPException(status_code=500, detail={"status": "error", "message": str(e)})
+
+@app.get("/job/{job_id}")
+def get_job(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail={"status": "error", "message": "job_not_found"})
+    return {"status": job["status"], "result": job["result"], "job_id": job_id}
+
 class NewProxiesRequest(BaseModel):
-    port_min: Optional[int] = 20000
-    port_max: Optional[int] = 40000
-    health_timeout: Optional[int] = 45
-    request_timeout: Optional[int] = 15
-    max_attempts: Optional[int] = 5
+    port_min: int = 8887
+    port_max: int = 20000
+    health_timeout: int = 45
+    request_timeout: int = 15
+    max_attempts: int = 5
     count: int = 1
 
 @app.post("/new_proxies")
-def new_proxies(req: NewProxiesRequest):
+def new_proxies(req: Optional[NewProxiesRequest] = None):
     try:
+        if req is None:
+            req = NewProxiesRequest()
         mgr = VPNManager(
             port_min=req.port_min,
             port_max=req.port_max,
@@ -86,6 +134,22 @@ def get_proxy(name: str):
         raise HTTPException(status_code=404, detail=res)
     except Exception as e:
         logger.exception("Failed to get proxy")
+        raise HTTPException(status_code=500, detail={"status": "error", "message": str(e)})
+
+@app.post("/proxy/{name}/restart_and_check")
+def restart_and_check(name: str):
+    """Restart the proxy container and validate via ipify through its HTTP proxy.
+
+    Returns status ok with ip_seen on success, or error details.
+    """
+    try:
+        mgr = VPNManager()
+        res = mgr.restart_and_check(name)
+        if res.get("status") == "ok":
+            return res
+        raise HTTPException(status_code=502, detail=res)
+    except Exception as e:
+        logger.exception("Failed to restart and check proxy")
         raise HTTPException(status_code=500, detail={"status": "error", "message": str(e)})
 
 @app.delete("/proxy/{name}")

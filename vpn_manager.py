@@ -32,14 +32,18 @@ class VPNManager:
 
     def __init__(self,
                  configs_dir: str = "./openvpn",
-                 port_min: int = 20000,
-                 port_max: int = 40000,
-                 health_timeout: int = 45,
-                 request_timeout: int = 15,
-                 max_attempts: int = 5) -> None:
+                 port_min: int = 8887,
+                 port_max: int = 20000,
+                 health_timeout: int = 30,
+                 request_timeout: int = 10,
+                 max_attempts: int = 3) -> None:
         self.configs_dir = Path(configs_dir)
-        self.port_min = port_min
-        self.port_max = port_max
+        # Enforce allowed port range 8887-20000
+        ALLOWED_MIN, ALLOWED_MAX = 8887, 20000
+        self.port_min = max(ALLOWED_MIN, int(port_min))
+        self.port_max = min(ALLOWED_MAX, int(port_max))
+        if self.port_min > self.port_max:
+            raise ValueError(f"Invalid port range. Allowed range is {ALLOWED_MIN}-{ALLOWED_MAX}.")
         self.health_timeout = health_timeout
         self.request_timeout = request_timeout
         self.max_attempts = max_attempts
@@ -98,14 +102,14 @@ class VPNManager:
                     last_error = "container_launch_failed"
                     continue
 
-                healthy, logs_tail = self._wait_for_healthy(container)
+                healthy, logs_tail = self._wait_for_healthy(container, host_port)
                 if not healthy:
                     last_error = "health_timeout"
                     logger.warning("Health check failed; trying restart")
                     if not self._restart_container(container):
                         last_error = "restart_failed"
                     else:
-                        healthy, logs_tail = self._wait_for_healthy(container)
+                        healthy, logs_tail = self._wait_for_healthy(container, host_port)
                         if not healthy:
                             last_error = "post_restart_health_timeout"
 
@@ -126,7 +130,7 @@ class VPNManager:
                         last_error = "proxy_validation_failed"
                         logger.warning("Proxy validation failed; attempting restart and revalidate")
                         if self._restart_container(container):
-                            healthy, logs_tail = self._wait_for_healthy(container)
+                            healthy, logs_tail = self._wait_for_healthy(container, host_port)
                             if healthy:
                                 proxy_url, ip_seen = self._validate_proxy(host_port)
                                 if proxy_url and ip_seen:
@@ -158,7 +162,6 @@ class VPNManager:
         return {
             "status": "error",
             "message": str(last_error or "unknown_error"),
-            "logs_excerpt": logs_tail[-50:] if logs_tail else [],
         }
 
     def create_multiple_proxies(self, count: int = 1, sequential: bool = True) -> Dict:
@@ -295,23 +298,19 @@ class VPNManager:
             logger.error(f"Failed to run container: {e}")
             return None
 
-    def _wait_for_healthy(self, container) -> Tuple[bool, list]:
+    def _wait_for_healthy(self, container, host_port: int) -> Tuple[bool, list]:
         start = time.time()
         logs_tail = []
         while time.time() - start < self.health_timeout:
             try:
                 container.reload()
-                logs = container.logs(tail=200).decode("utf-8", errors="ignore")
-                logs_tail = logs.split("\n")
-                low = logs.lower()
-                if any(ind in low for ind in HEALTH_INDICATORS):
-                    logger.info("Health indicators found in logs")
+                # Try proxy validation instead of log parsing
+                proxy_url, ip_seen = self._validate_proxy(host_port)
+                if proxy_url and ip_seen:
+                    logger.info(f"Proxy healthy and validated: {ip_seen}")
                     return True, logs_tail
-                if any(err in low for err in ERROR_INDICATORS):
-                    logger.warning("Error indicators found in logs; breaking")
-                    return False, logs_tail
-            except Exception:
-                time.sleep(2)
+            except Exception as e:
+                logger.debug(f"Health check attempt failed: {e}")
             time.sleep(3)
         logger.error("Health check timed out")
         return False, logs_tail
@@ -324,6 +323,38 @@ class VPNManager:
         except Exception as e:
             logger.error(f"Failed to restart container: {e}")
             return False
+
+    def restart_and_check(self, name: str) -> Dict:
+        """Restart a proxy container by name and validate via ipify through its HTTP proxy.
+
+        Returns {status: ok, http_port: int, ip_seen: str} on success, or {status: error, message}.
+        """
+        try:
+            c = self.client.containers.get(name)
+        except NotFound:
+            return {"status": "error", "message": "not_found"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+        ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
+        http_port = None
+        if "8888/tcp" in ports and ports["8888/tcp"]:
+            b = ports["8888/tcp"][0]
+            http_port = b.get("HostPort")
+        if not http_port:
+            return {"status": "error", "message": "http_port_not_found"}
+
+        if not self._restart_container(c):
+            return {"status": "error", "message": "restart_failed"}
+
+        healthy, _ = self._wait_for_healthy(c, int(http_port))
+        if not healthy:
+            return {"status": "error", "message": "health_timeout"}
+
+        proxy_url, ip_seen = self._validate_proxy(int(http_port))
+        if proxy_url and ip_seen:
+            return {"status": "ok", "http_port": int(http_port), "ip_seen": ip_seen}
+        return {"status": "error", "message": "proxy_validation_failed"}
 
     def _remove_container_safe(self, container) -> None:
         if not container:
