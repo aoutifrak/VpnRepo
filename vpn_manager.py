@@ -3,7 +3,6 @@ import time
 import random
 import socket
 import logging
-import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Tuple
 import json
@@ -64,7 +63,7 @@ class VPNManager:
         self._ensure_bad_db()
         self.bad_list = set(self._load_bad_list())
 
-        # Prepare ovpn list only if using nordvpn provider
+        # Prepare ovpn list only if using custom provider
         self.ovpn_files = []
         if self.vpn_provider == "nordvpn":
             if not self.configs_dir.exists():
@@ -200,7 +199,10 @@ class VPNManager:
             items = []
             for c in containers:
                 ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
-                http_port = self._extract_host_port(ports)
+                http_port = None
+                if "8888/tcp" in ports and ports["8888/tcp"]:
+                    b = ports["8888/tcp"][0]
+                    http_port = b.get("HostPort")
                 items.append({
                     "id": c.id,
                     "name": c.name,
@@ -215,7 +217,10 @@ class VPNManager:
         try:
             c = self.client.containers.get(name)
             ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
-            http_port = self._extract_host_port(ports)
+            http_port = None
+            if "8888/tcp" in ports and ports["8888/tcp"]:
+                b = ports["8888/tcp"][0]
+                http_port = b.get("HostPort")
             return {"status": "ok", "id": c.id, "name": c.name, "state": c.status, "http_port": http_port}
         except NotFound:
             return {"status": "error", "message": "not_found"}
@@ -253,7 +258,7 @@ class VPNManager:
         # Provider selection
         if self.vpn_provider == "nordvpn" and ovpn_file is not None:
             env["VPN_SERVICE_PROVIDER"] = "nordvpn"
-            env["OPENVPN_CUSTOM_CONFIG"] = f"/gluetun/ovpnvpn/{ovpn_file.name}"
+            env["OPENVPN_CUSTOM_CONFIG"] = f"/gluetun/nordvpn/{ovpn_file.name}"
         else:
             # Use given provider (e.g., nordvpn) per config.json
             env["VPN_SERVICE_PROVIDER"] = self.vpn_provider
@@ -263,7 +268,7 @@ class VPNManager:
         if self.vpn_pass:
             env["OPENVPN_PASSWORD"] = self.vpn_pass
 
-        # Mount custom configs only when using nordvpn
+        # Mount custom configs only when using custom
         volumes = {}
         if self.vpn_provider == "nordvpn" and ovpn_file is not None:
             volumes[str(self.configs_dir.resolve())] = {
@@ -311,27 +316,12 @@ class VPNManager:
         return False, logs_tail
 
     def _restart_container(self, container) -> bool:
-        name = getattr(container, "name", None)
-        if not name:
-            logger.error("Cannot restart container without name")
-            return False
         try:
-            result = subprocess.run(
-                ["docker", "restart", name],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            logger.info(f"Container restart output: {result.stdout.strip()}")
-            time.sleep(7)  # brief wait after restart
-            # Refresh docker SDK object to pick up new state
-            try:
-                container.reload()
-            except Exception:
-                pass
+            container.restart(timeout=30)
+            logger.info("Container restarted")
             return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to restart container via docker CLI: {e.stderr.strip() if e.stderr else e}")
+        except Exception as e:
+            logger.error(f"Failed to restart container: {e}")
             return False
 
     def restart_and_check(self, name: str) -> Dict:
@@ -347,20 +337,23 @@ class VPNManager:
             return {"status": "error", "message": str(e)}
 
         ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
-        http_port = self._extract_host_port(ports)
-        if http_port is None:
+        http_port = None
+        if "8888/tcp" in ports and ports["8888/tcp"]:
+            b = ports["8888/tcp"][0]
+            http_port = b.get("HostPort")
+        if not http_port:
             return {"status": "error", "message": "http_port_not_found"}
 
         if not self._restart_container(c):
             return {"status": "error", "message": "restart_failed"}
 
-        healthy, _ = self._wait_for_healthy(c, http_port)
+        healthy, _ = self._wait_for_healthy(c, int(http_port))
         if not healthy:
             return {"status": "error", "message": "health_timeout"}
 
-        proxy_url, ip_seen = self._validate_proxy(http_port)
+        proxy_url, ip_seen = self._validate_proxy(int(http_port))
         if proxy_url and ip_seen:
-            return {"status": "ok", "http_port": http_port, "ip_seen": ip_seen}
+            return {"status": "ok", "http_port": int(http_port), "ip_seen": ip_seen}
         return {"status": "error", "message": "proxy_validation_failed"}
 
     def _remove_container_safe(self, container) -> None:
@@ -389,31 +382,6 @@ class VPNManager:
         except Exception as e:
             logger.debug(f"Proxy validation error: {e}")
         return None, None
-
-    @staticmethod
-    def _extract_host_port(ports: Dict) -> Optional[int]:
-        if not ports:
-            return None
-        preferred_keys = ["8888/tcp"]
-        for key in preferred_keys:
-            bindings = ports.get(key)
-            if bindings:
-                host_port = bindings[0].get("HostPort")
-                if host_port:
-                    try:
-                        return int(host_port)
-                    except (TypeError, ValueError):
-                        continue
-        for bindings in ports.values():
-            if not bindings:
-                continue
-            host_port = bindings[0].get("HostPort")
-            if host_port:
-                try:
-                    return int(host_port)
-                except (TypeError, ValueError):
-                    continue
-        return None
 
     def _choose_free_port(self) -> int:
         for _ in range(50):
