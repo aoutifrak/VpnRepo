@@ -7,6 +7,7 @@ import uuid
 import time
 import requests
 import docker
+from datetime import datetime, timezone
 
 # Simple in-memory job store
 JOBS = {}
@@ -19,6 +20,8 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger("vpnMan")
 
 app = FastAPI(title="vpn_manager", version="1.0.0")
+
+MAX_CONTAINER_UPTIME_MINUTES = 20
 
 class NewProxyRequest(BaseModel):
     port_min: int = 8887
@@ -101,11 +104,33 @@ def _validate_port(port: int, timeout: int = 8) -> bool:
     except Exception:
         return False
 
+
+def _parse_docker_time(raw: Optional[str]) -> Optional[datetime]:
+    if not raw:
+        return None
+
+    candidate = raw.strip()
+    if not candidate:
+        return None
+
+    try:
+        if candidate.endswith("Z"):
+            candidate = candidate[:-1] + "+00:00"
+        return datetime.fromisoformat(candidate)
+    except ValueError:
+        try:
+            truncated = raw.split(".")[0]
+            dt = datetime.strptime(truncated, "%Y-%m-%dT%H:%M:%S")
+            return dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
 def _sweep_once() -> dict:
     client = docker.from_env()
     removed = []
     healthy = []
     errors = []
+    now_utc = datetime.now(timezone.utc)
     try:
         containers = client.containers.list(all=True, filters={"ancestor": "qmcgaw/gluetun:latest"})
         for c in containers:
@@ -120,6 +145,20 @@ def _sweep_once() -> dict:
                     c.remove(force=True)
                     removed.append(c.name)
                     continue
+
+                state = c.attrs.get("State", {})
+                started_at = _parse_docker_time(state.get("StartedAt"))
+                if started_at is None:
+                    started_at = _parse_docker_time(c.attrs.get("Created"))
+                if started_at and started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=timezone.utc)
+
+                if state.get("Running") and started_at:
+                    uptime_minutes = (now_utc - started_at).total_seconds() / 60.0
+                    if uptime_minutes > MAX_CONTAINER_UPTIME_MINUTES:
+                        c.remove(force=True)
+                        removed.append(f"{c.name} (uptime>{MAX_CONTAINER_UPTIME_MINUTES}m)")
+                        continue
                 port_int = int(host_port)
                 if _validate_port(port_int):
                     healthy.append({"name": c.name, "port": port_int})
