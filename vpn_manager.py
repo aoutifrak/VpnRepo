@@ -3,6 +3,7 @@ import time
 import random
 import socket
 import logging
+import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Tuple
 import json
@@ -310,12 +311,26 @@ class VPNManager:
         return False, logs_tail
 
     def _restart_container(self, container) -> bool:
+        name = getattr(container, "name", None)
+        if not name:
+            logger.error("Cannot restart container without name")
+            return False
         try:
-            container.restart(timeout=30)
-            logger.info("Container restarted")
+            result = subprocess.run(
+                ["docker", "restart", name],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            logger.info(f"Container restart output: {result.stdout.strip()}")
+            # Refresh docker SDK object to pick up new state
+            try:
+                container.reload()
+            except Exception:
+                pass
             return True
-        except Exception as e:
-            logger.error(f"Failed to restart container: {e}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to restart container via docker CLI: {e.stderr.strip() if e.stderr else e}")
             return False
 
     def restart_and_check(self, name: str) -> Dict:
