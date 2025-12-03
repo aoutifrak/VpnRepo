@@ -62,6 +62,28 @@ curl http://localhost:8000/proxies
 curl http://localhost:8000/proxy/<container_name>
 ```
 
+## Restart + Validate Proxy
+
+Restart a proxy's container and verify it's ready (via ipify):
+
+```bash
+curl -X POST http://localhost:8000/proxy/<container_name>/restart_and_check
+```
+
+Example response:
+```json
+{
+  "status": "ok",
+  "http_port": 17967,
+  "ip_seen": "45.84.137.248"
+}
+```
+
+To test after restart:
+```bash
+curl -x http://127.0.0.1:<http_port> https://api.ipify.org?format=json
+```
+
 ## Delete Proxy
 
 ```bash
@@ -109,3 +131,9 @@ For external access (e.g., from your local machine to Vultr instance):
 - Replace `127.0.0.1` with your server's public IP
 - Keep the same `proxy_port`
 - Example: `http://45.76.248.249:17967`
+
+Restart + validate from another machine:
+```bash
+curl -X POST http://<server-ip>:8000/proxy/<container_name>/restart_and_check
+curl -x http://<server-ip>:<http_port> https://api.ipify.org?format=json
+```
