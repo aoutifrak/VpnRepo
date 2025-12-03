@@ -101,6 +101,30 @@ def _validate_port(port: int, timeout: int = 8) -> bool:
     except Exception:
         return False
 
+def _extract_host_port(ports: dict) -> Optional[int]:
+    if not ports:
+        return None
+    preferred_keys = ["8888/tcp"]
+    for key in preferred_keys:
+        bindings = ports.get(key)
+        if bindings:
+            host_port = bindings[0].get("HostPort")
+            if host_port:
+                try:
+                    return int(host_port)
+                except (TypeError, ValueError):
+                    continue
+    for bindings in ports.values():
+        if not bindings:
+            continue
+        host_port = bindings[0].get("HostPort")
+        if host_port:
+            try:
+                return int(host_port)
+            except (TypeError, ValueError):
+                continue
+    return None
+
 def _sweep_once() -> dict:
     client = docker.from_env()
     removed = []
@@ -111,18 +135,14 @@ def _sweep_once() -> dict:
         for c in containers:
             try:
                 ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
-                mapping = ports.get("8888/tcp")
-                host_port = None
-                if mapping:
-                    host_port = mapping[0].get("HostPort")
-                if not host_port:
+                host_port = _extract_host_port(ports)
+                if host_port is None:
                     # No http proxy exposed -> remove (unusable)
                     c.remove(force=True)
                     removed.append(c.name)
                     continue
-                port_int = int(host_port)
-                if _validate_port(port_int):
-                    healthy.append({"name": c.name, "port": port_int})
+                if _validate_port(host_port):
+                    healthy.append({"name": c.name, "port": host_port})
                 else:
                     c.remove(force=True)
                     removed.append(c.name)

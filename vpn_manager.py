@@ -199,10 +199,7 @@ class VPNManager:
             items = []
             for c in containers:
                 ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
-                http_port = None
-                if "8888/tcp" in ports and ports["8888/tcp"]:
-                    b = ports["8888/tcp"][0]
-                    http_port = b.get("HostPort")
+                http_port = self._extract_host_port(ports)
                 items.append({
                     "id": c.id,
                     "name": c.name,
@@ -217,10 +214,7 @@ class VPNManager:
         try:
             c = self.client.containers.get(name)
             ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
-            http_port = None
-            if "8888/tcp" in ports and ports["8888/tcp"]:
-                b = ports["8888/tcp"][0]
-                http_port = b.get("HostPort")
+            http_port = self._extract_host_port(ports)
             return {"status": "ok", "id": c.id, "name": c.name, "state": c.status, "http_port": http_port}
         except NotFound:
             return {"status": "error", "message": "not_found"}
@@ -337,23 +331,20 @@ class VPNManager:
             return {"status": "error", "message": str(e)}
 
         ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
-        http_port = None
-        if "8888/tcp" in ports and ports["8888/tcp"]:
-            b = ports["8888/tcp"][0]
-            http_port = b.get("HostPort")
-        if not http_port:
+        http_port = self._extract_host_port(ports)
+        if http_port is None:
             return {"status": "error", "message": "http_port_not_found"}
 
         if not self._restart_container(c):
             return {"status": "error", "message": "restart_failed"}
 
-        healthy, _ = self._wait_for_healthy(c, int(http_port))
+        healthy, _ = self._wait_for_healthy(c, http_port)
         if not healthy:
             return {"status": "error", "message": "health_timeout"}
 
-        proxy_url, ip_seen = self._validate_proxy(int(http_port))
+        proxy_url, ip_seen = self._validate_proxy(http_port)
         if proxy_url and ip_seen:
-            return {"status": "ok", "http_port": int(http_port), "ip_seen": ip_seen}
+            return {"status": "ok", "http_port": http_port, "ip_seen": ip_seen}
         return {"status": "error", "message": "proxy_validation_failed"}
 
     def _remove_container_safe(self, container) -> None:
@@ -382,6 +373,31 @@ class VPNManager:
         except Exception as e:
             logger.debug(f"Proxy validation error: {e}")
         return None, None
+
+    @staticmethod
+    def _extract_host_port(ports: Dict) -> Optional[int]:
+        if not ports:
+            return None
+        preferred_keys = ["8888/tcp"]
+        for key in preferred_keys:
+            bindings = ports.get(key)
+            if bindings:
+                host_port = bindings[0].get("HostPort")
+                if host_port:
+                    try:
+                        return int(host_port)
+                    except (TypeError, ValueError):
+                        continue
+        for bindings in ports.values():
+            if not bindings:
+                continue
+            host_port = bindings[0].get("HostPort")
+            if host_port:
+                try:
+                    return int(host_port)
+                except (TypeError, ValueError):
+                    continue
+        return None
 
     def _choose_free_port(self) -> int:
         for _ in range(50):
