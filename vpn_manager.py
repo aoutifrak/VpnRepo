@@ -325,9 +325,9 @@ class VPNManager:
             return False
 
     def restart_and_check(self, name: str) -> Dict:
-        """Restart a proxy container by name and validate via ipify through its HTTP proxy.
+        """Restart a proxy container by name and validate via ipify.
 
-        Returns {status: ok, http_port: int, ip_seen: str} on success, or {status: error, message}.
+        Returns container metadata on success, otherwise {status: error, message}.
         """
         try:
             c = self.client.containers.get(name)
@@ -338,22 +338,61 @@ class VPNManager:
 
         ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
         http_port = None
-        if "8888/tcp" in ports and ports["8888/tcp"]:
-            b = ports["8888/tcp"][0]
-            http_port = b.get("HostPort")
+        mapping = ports.get("8888/tcp")
+        if mapping:
+            http_port = mapping[0].get("HostPort")
         if not http_port:
             return {"status": "error", "message": "http_port_not_found"}
+
+        host_port = int(http_port)
 
         if not self._restart_container(c):
             return {"status": "error", "message": "restart_failed"}
 
-        healthy, _ = self._wait_for_healthy(c, int(http_port))
+        healthy, _ = self._wait_for_healthy(c, host_port)
         if not healthy:
             return {"status": "error", "message": "health_timeout"}
 
-        proxy_url, ip_seen = self._validate_proxy(int(http_port))
+        proxy_url, ip_seen = self._validate_proxy(host_port)
         if proxy_url and ip_seen:
-            return {"status": "ok", "http_port": int(http_port), "ip_seen": ip_seen}
+            return {
+                "status": "ok",
+                "container_id": c.id,
+                "container_name": c.name,
+                "proxy_url": proxy_url,
+                "proxy_port": host_port,
+                "ip_seen": ip_seen,
+            }
+        return {"status": "error", "message": "proxy_validation_failed"}
+
+    def check_container(self, name: str) -> Dict:
+        """Validate an existing container without restarting it."""
+        try:
+            c = self.client.containers.get(name)
+        except NotFound:
+            return {"status": "error", "message": "not_found"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+        ports = c.attrs.get("NetworkSettings", {}).get("Ports", {})
+        mapping = ports.get("8888/tcp")
+        http_port = None
+        if mapping:
+            http_port = mapping[0].get("HostPort")
+        if not http_port:
+            return {"status": "error", "message": "http_port_not_found"}
+
+        host_port = int(http_port)
+        proxy_url, ip_seen = self._validate_proxy(host_port)
+        if proxy_url and ip_seen:
+            return {
+                "status": "ok",
+                "container_id": c.id,
+                "container_name": c.name,
+                "proxy_url": proxy_url,
+                "proxy_port": host_port,
+                "ip_seen": ip_seen,
+            }
         return {"status": "error", "message": "proxy_validation_failed"}
 
     def _remove_container_safe(self, container) -> None:

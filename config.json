@@ -1,5 +1,6 @@
 {
     "vpn_service_provider": "nordvpn",
     "openvpn_user": "wngZ5y8MeV1DP1beGzn6S2Df",
-    "openvpn_password": "5RkkFQhUHnrjcRiJC6BpJYvA"
+    "openvpn_password": "5RkkFQhUHnrjcRiJC6BpJYvA",
+    "container_pool_size": 8
 }
