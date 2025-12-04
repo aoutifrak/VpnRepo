@@ -151,10 +151,12 @@ def _reset_pool_state():
 @pytest.fixture(autouse=True)
 def patch_manager(monkeypatch):
     FakeVPNManager.reset()
+    monkeypatch.setattr(main, "VPNManager", FakeVPNManager)
     _reset_pool_state()
     main.POOL.target_size = 2
     main.POOL.manager_kwargs = main._build_manager_kwargs(main.POOL.request_config)
-    monkeypatch.setattr(main, "VPNManager", FakeVPNManager)
+    for _ in range(main.POOL.target_size):
+        main.POOL.create_sync()
     yield
     FakeVPNManager.reset()
 

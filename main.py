@@ -20,8 +20,8 @@ logger = logging.getLogger("vpnMan")
 app = FastAPI(title="vpn_manager", version="3.0.0")
 
 CONFIG_PATH = Path("./config.json")
-DEFAULT_POOL_SIZE = 8
-MAX_REPAIR_ATTEMPTS = 3
+DEFAULT_POOL_SIZE = 6
+MAX_REPAIR_ATTEMPTS = 2
 
 JOBS: Dict[str, Dict] = {}
 
@@ -58,7 +58,7 @@ def _load_pool_target_size(default: int = DEFAULT_POOL_SIZE) -> int:
 
 def _build_manager_kwargs(config: Dict) -> Dict:
     return {
-        "port_min": config.get("port_min", 8887),
+        "port_min": config.get("port_min", 8889),
         "port_max": config.get("port_max", 20000),
         "health_timeout": config.get("health_timeout", 45),
         "request_timeout": config.get("request_timeout", 15),
@@ -145,9 +145,11 @@ class ContainerPool:
         replacement = self.get_valid()
         if replacement:
             return replacement
-        replacement = self.create_sync()
-        if replacement:
-            return replacement
+        if not self.start_worker:
+            replacement = self.create_sync()
+            if replacement:
+                return replacement
+        self.request_fill(1)
         raise RuntimeError("no_available_container")
 
     def _flag_container_for_restart(self, name: str) -> None:
@@ -371,6 +373,11 @@ class ContainerPool:
     def _count_valid_locked(self) -> int:
         return len(self.valid_set)
 
+    def request_fill(self, count: int = 1) -> None:
+        count = max(0, int(count))
+        for _ in range(count):
+            self._schedule_create()
+
     def run_sweeper(self) -> Dict:
         targets = self._gather_sweep_targets()
         results = []
@@ -466,9 +473,11 @@ def new_proxy(req: Optional[NewProxyRequest] = None):
         container = POOL.get_valid()
         if container:
             return container
-        created = POOL.create_sync()
-        if created:
-            return created
+        if not POOL.start_worker:
+            created = POOL.create_sync()
+            if created:
+                return created
+        POOL.request_fill(1)
         raise HTTPException(status_code=503,
                             detail={"status": "error", "message": "no_available_container"})
     except HTTPException:
@@ -490,7 +499,10 @@ def new_proxy_async(req: Optional[NewProxyRequest] = None):
         try:
             container = POOL.get_valid()
             if not container:
-                container = POOL.create_sync()
+                if not POOL.start_worker:
+                    container = POOL.create_sync()
+                else:
+                    POOL.request_fill(1)
             if container:
                 JOBS[job_id]["result"] = container
                 JOBS[job_id]["status"] = "done"

@@ -89,7 +89,7 @@ class VPNManager:
         while attempt < self.max_attempts:
             attempt += 1
             try:
-                chosen = random.choice(self.ovpn_files) if self.vpn_provider == "custom" else None
+                chosen = random.choice(self.ovpn_files) if self.vpn_provider == "nordvpn" else None
                 host_port = self._choose_free_port()
                 name = f"vpn-proxy-{int(time.time())}-{random.randint(1000,9999)}"
                 if chosen:
